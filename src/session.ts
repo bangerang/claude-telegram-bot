@@ -69,6 +69,80 @@ function getTextFromMessage(msg: SDKMessage): string | null {
 }
 
 /**
+ * Load persistent memory from ~/.ai/memory
+ */
+async function loadMemory(): Promise<string> {
+  try {
+    const { homedir } = await import("os");
+    const memoryDir = `${homedir()}/.ai/memory`;
+
+    // Check if memory directory exists
+    const memoryDirExists = await Bun.file(`${memoryDir}/user-profile.json`).exists();
+    if (!memoryDirExists) {
+      return ""; // No memory configured yet
+    }
+
+    // Load all memory files
+    const profile = await Bun.file(`${memoryDir}/user-profile.json`).json().catch(() => null);
+    const context = await Bun.file(`${memoryDir}/context.json`).json().catch(() => null);
+    const preferences = await Bun.file(`${memoryDir}/preferences.json`).json().catch(() => null);
+
+    if (!profile && !context && !preferences) {
+      return "";
+    }
+
+    // Format memory for injection
+    const parts: string[] = ["📚 **PERSISTENT MEMORY LOADED**\n"];
+
+    if (profile) {
+      parts.push("**User Profile:**");
+      parts.push(`- Name: ${profile.name || "Unknown"}`);
+      parts.push(`- Location: ${profile.location || "Unknown"} (${profile.timezone || ""})`);
+      if (profile.languages?.length) {
+        parts.push(`- Languages: ${profile.languages.join(", ")}`);
+      }
+      if (profile.custom_facts?.length > 0) {
+        parts.push("\n**Custom Facts:**");
+        profile.custom_facts.forEach((fact: string) => parts.push(`- ${fact}`));
+      }
+      parts.push("");
+    }
+
+    if (context?.current_projects?.length > 0) {
+      parts.push("**Current Projects:**");
+      context.current_projects.forEach((proj: any) => {
+        parts.push(`- ${proj.name} (${proj.path})`);
+        if (proj.tech_stack) parts.push(`  Tech: ${proj.tech_stack.join(", ")}`);
+        if (proj.notes) parts.push(`  Notes: ${proj.notes}`);
+      });
+      parts.push("");
+    }
+
+    if (context?.recent_context?.notes?.length > 0) {
+      parts.push("**Recent Context:**");
+      context.recent_context.notes.forEach((note: string) => parts.push(`- ${note}`));
+      parts.push("");
+    }
+
+    if (preferences) {
+      parts.push("**Preferences:**");
+      if (preferences.coding) {
+        parts.push(`- Coding: ${preferences.coding.preferred_runtime || "N/A"}, ${preferences.coding.preferred_languages?.join(", ") || "N/A"}`);
+      }
+      if (preferences.workflow?.development_folder) {
+        parts.push(`- Dev folder: ${preferences.workflow.development_folder}`);
+      }
+      parts.push("");
+    }
+
+    return parts.join("\n") + "\n---\n\n";
+  } catch (error) {
+    console.warn(`Failed to load memory: ${error}`);
+    return "";
+  }
+}
+
+/**
  * Manages Claude Code sessions using the Agent SDK V1.
  */
 // Maximum number of sessions to keep in history
@@ -186,7 +260,7 @@ class ClaudeSession {
       { 0: "off", 10000: "normal", 50000: "deep" }[thinkingTokens] ||
       String(thinkingTokens);
 
-    // Inject current date/time at session start so Claude doesn't need to call a tool for it
+    // Inject current date/time and memory at session start
     let messageToSend = message;
     if (isNewSession) {
       const now = new Date();
@@ -202,7 +276,11 @@ class ClaudeSession {
           timeZoneName: "short",
         }
       )}]\n\n`;
-      messageToSend = datePrefix + message;
+
+      // Load persistent memory
+      const memoryContent = await loadMemory();
+
+      messageToSend = datePrefix + memoryContent + message;
     }
 
     // Build SDK V1 options - supports all features
