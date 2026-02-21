@@ -41,11 +41,11 @@ import {
   type SearchResult,
 } from "./embeddings";
 
-// Check if OpenAI API key is available for embeddings
-const EMBEDDINGS_ENABLED = !!process.env.OPENAI_API_KEY;
+// Check if any embedding API key is available
+const EMBEDDINGS_ENABLED = !!(process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY);
 
 /**
- * Safely store embedding - skips if OpenAI API key not available
+ * Safely store embedding - skips if no API key available
  */
 async function safeStoreEmbedding(
   sourceType: "conversation" | "decision" | "task" | "knowledge" | "pattern",

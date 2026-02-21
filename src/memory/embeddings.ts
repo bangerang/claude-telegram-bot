@@ -1,43 +1,60 @@
 /**
  * Embeddings Service - Vector embeddings for semantic search
  *
- * Uses OpenAI's text-embedding-3-small model (1536 dimensions)
+ * Uses OpenRouter's embeddings API (OpenAI-compatible)
+ * Falls back to direct OpenAI if OPENROUTER_API_KEY not set
  */
 
 import OpenAI from "openai";
 import { getDb } from "./db";
 
-const EMBEDDING_MODEL = "text-embedding-3-small";
+// Use a small, fast model - good balance of quality and speed
+const EMBEDDING_MODEL = "openai/text-embedding-3-small";
 const EMBEDDING_DIMENSIONS = 1536;
 
-let openai: OpenAI | null = null;
+let client: OpenAI | null = null;
+let usingOpenRouter = false;
 
-function getOpenAI(): OpenAI {
-  if (!openai) {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error("OPENAI_API_KEY not set - required for semantic search");
+function getClient(): OpenAI {
+  if (!client) {
+    // Prefer OpenRouter if available
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+    if (openrouterKey) {
+      client = new OpenAI({
+        apiKey: openrouterKey,
+        baseURL: "https://openrouter.ai/api/v1",
+      });
+      usingOpenRouter = true;
+    } else {
+      // Fall back to direct OpenAI
+      const openaiKey = process.env.OPENAI_API_KEY;
+      if (!openaiKey) {
+        throw new Error("No API key set - need OPENROUTER_API_KEY or OPENAI_API_KEY for embeddings");
+      }
+      client = new OpenAI({ apiKey: openaiKey });
     }
-    openai = new OpenAI({ apiKey });
   }
-  return openai;
+  return client;
 }
 
 /**
  * Generate embedding for text
  */
 export async function generateEmbedding(text: string): Promise<Float32Array> {
-  const client = getOpenAI();
+  const api = getClient();
 
-  const response = await client.embeddings.create({
-    model: EMBEDDING_MODEL,
+  // OpenRouter uses full model path, direct OpenAI uses short name
+  const model = usingOpenRouter ? EMBEDDING_MODEL : "text-embedding-3-small";
+
+  const response = await api.embeddings.create({
+    model,
     input: text,
     dimensions: EMBEDDING_DIMENSIONS,
   });
 
   const data = response.data[0];
   if (!data || !data.embedding) {
-    throw new Error("No embedding returned from OpenAI");
+    throw new Error("No embedding returned from API");
   }
   return new Float32Array(data.embedding);
 }
