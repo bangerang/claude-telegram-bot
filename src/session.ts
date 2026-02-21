@@ -32,6 +32,12 @@ import type {
   StatusCallback,
   TokenUsage,
 } from "./types";
+import {
+  startConversation,
+  endConversation,
+  getRelevantContext,
+  formatContextForPrompt,
+} from "./memory";
 
 /**
  * Determine thinking token budget based on message keywords.
@@ -277,15 +283,27 @@ class ClaudeSession {
         }
       )}]\n\n`;
 
-      // Load persistent memory
+      // Load persistent memory from JSON files
       const memoryContent = await loadMemory();
 
-      messageToSend = datePrefix + memoryContent + message;
+      // Load relevant context from memory database
+      let dbContext = "";
+      try {
+        const context = await getRelevantContext(WORKING_DIR, message);
+        dbContext = formatContextForPrompt(context);
+        if (dbContext) {
+          dbContext = "\n🧠 **MEMORY DATABASE CONTEXT**\n" + dbContext + "\n---\n\n";
+        }
+      } catch (err) {
+        console.warn(`Failed to load memory database context: ${err}`);
+      }
+
+      messageToSend = datePrefix + memoryContent + dbContext + message;
     }
 
     // Build SDK V1 options - supports all features
     const options: Options = {
-      model: "claude-sonnet-4-5",
+      model: "claude-opus-4-5",
       cwd: WORKING_DIR,
       settingSources: ["user", "project"],
       permissionMode: "bypassPermissions",
@@ -361,6 +379,13 @@ class ClaudeSession {
           this.sessionId = event.session_id;
           console.log(`GOT session_id: ${this.sessionId!.slice(0, 8)}...`);
           this.saveSession();
+
+          // Track in memory database
+          try {
+            await startConversation(event.session_id, WORKING_DIR);
+          } catch (err) {
+            console.warn(`Failed to track conversation in memory: ${err}`);
+          }
         }
 
         // Handle different message types

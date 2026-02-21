@@ -8,6 +8,14 @@ import type { Context } from "grammy";
 import { session } from "../session";
 import { WORKING_DIR, ALLOWED_USERS, RESTART_FILE } from "../config";
 import { isAuthorized } from "../security";
+import {
+  endConversation,
+  rememberDecision,
+  learnPattern,
+  recordTask,
+  remember,
+  quickSummary,
+} from "../memory";
 
 /**
  * /start - Show welcome message and status.
@@ -45,6 +53,7 @@ export async function handleStart(ctx: Context): Promise<void> {
 
 /**
  * /new - Start a fresh session.
+ * Saves conversation to memory database before clearing.
  */
 export async function handleNew(ctx: Context): Promise<void> {
   const userId = ctx.from?.id;
@@ -60,6 +69,27 @@ export async function handleNew(ctx: Context): Promise<void> {
     if (result) {
       await Bun.sleep(100);
       session.clearStopRequested();
+    }
+  }
+
+  // Save conversation to memory before clearing
+  const sessionId = session.sessionId;
+  if (sessionId && session.conversationTitle) {
+    try {
+      // Quick summary of the conversation
+      const summary = await quickSummary(
+        `Conversation titled: "${session.conversationTitle}"`
+      );
+
+      await endConversation(sessionId, {
+        title: summary.title || session.conversationTitle,
+        summary: summary.summary,
+        topics: summary.topics,
+      });
+
+      console.log(`Saved conversation summary: ${summary.title}`);
+    } catch (err) {
+      console.warn(`Failed to save conversation summary: ${err}`);
     }
   }
 

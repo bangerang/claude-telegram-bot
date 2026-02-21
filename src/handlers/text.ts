@@ -13,6 +13,7 @@ import {
   startTypingIndicator,
 } from "../utils";
 import { StreamingState, createStatusCallback } from "./streaming";
+import { processUserFeedback, analyzeMessage } from "../memory";
 
 /**
  * Handle incoming text messages.
@@ -51,6 +52,11 @@ export async function handleText(ctx: Context): Promise<void> {
 
   // 4. Store message for retry
   session.lastMessage = message;
+
+  // 4.5. Process message for learning (async, non-blocking)
+  processUserFeedback(message, session.sessionId ?? undefined, "user_message").catch(
+    (err) => console.warn(`Failed to process feedback: ${err}`)
+  );
 
   // 5. Set conversation title from first message (if new session)
   if (!session.isActive) {
