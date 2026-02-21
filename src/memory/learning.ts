@@ -7,7 +7,8 @@
  * - Record implicit patterns
  */
 
-import { recordFeedback, recordPattern } from "./db";
+import { recordFeedback, recordPattern, addDecision, addTask } from "./db";
+import { storeEmbedding } from "./embeddings";
 
 // Frustration indicators
 const FRUSTRATION_PATTERNS = [
@@ -185,4 +186,156 @@ export function learnFromContext(
       });
     }
   }
+}
+
+// ============================================
+// Decision Detection
+// ============================================
+
+// Patterns that indicate a decision was made
+const DECISION_PATTERNS = [
+  // "Let's use X for Y"
+  /let'?s use\s+([^.!?\n]+)/i,
+  // "We'll use X"
+  /we'?ll use\s+([^.!?\n]+)/i,
+  // "I'll use X"
+  /i'?ll use\s+([^.!?\n]+)/i,
+  // "Going with X"
+  /going with\s+([^.!?\n]+)/i,
+  // "Decided to X"
+  /decided to\s+([^.!?\n]+)/i,
+  // "The approach is X"
+  /the approach (?:is|will be)\s+([^.!?\n]+)/i,
+  // "Using X instead of Y"
+  /using\s+([^.!?\n]+)\s+instead of/i,
+  // "Switched to X"
+  /switch(?:ed|ing) to\s+([^.!?\n]+)/i,
+];
+
+// Patterns to categorize decisions
+const CATEGORY_HINTS: Record<string, RegExp[]> = {
+  architecture: [/architecture|structure|pattern|design|approach/i],
+  library: [/library|package|dependency|npm|import|framework/i],
+  naming: [/name|naming|called|rename/i],
+  config: [/config|setting|option|flag|env/i],
+  workflow: [/workflow|process|step|pipeline/i],
+  ui: [/ui|ux|component|layout|style|css/i],
+  database: [/database|db|schema|table|sql|query/i],
+  api: [/api|endpoint|route|request|response/i],
+};
+
+/**
+ * Detect category from decision text
+ */
+function detectCategory(text: string): string {
+  for (const [category, patterns] of Object.entries(CATEGORY_HINTS)) {
+    for (const pattern of patterns) {
+      if (pattern.test(text)) {
+        return category;
+      }
+    }
+  }
+  return "general";
+}
+
+export interface DetectedDecision {
+  category: string;
+  description: string;
+}
+
+/**
+ * Analyze assistant response for decisions
+ */
+export function detectDecisions(response: string): DetectedDecision[] {
+  const decisions: DetectedDecision[] = [];
+  const seen = new Set<string>();
+
+  for (const pattern of DECISION_PATTERNS) {
+    const matches = response.matchAll(new RegExp(pattern, "gi"));
+    for (const match of matches) {
+      const description = match[1]?.trim();
+      if (description && description.length > 5 && description.length < 200) {
+        // Dedupe
+        const normalized = description.toLowerCase();
+        if (seen.has(normalized)) continue;
+        seen.add(normalized);
+
+        decisions.push({
+          category: detectCategory(description),
+          description,
+        });
+      }
+    }
+  }
+
+  return decisions;
+}
+
+/**
+ * Process assistant response and auto-record decisions
+ */
+export async function processAssistantResponse(
+  response: string,
+  options?: {
+    conversationId?: string;
+    projectPath?: string;
+  }
+): Promise<number> {
+  const decisions = detectDecisions(response);
+
+  for (const decision of decisions) {
+    const id = addDecision(decision.category, decision.description, {
+      conversationId: options?.conversationId,
+      projectPath: options?.projectPath,
+    });
+
+    // Store embedding for semantic search
+    try {
+      const searchText = `${decision.category}: ${decision.description}`;
+      await storeEmbedding("decision", id, searchText);
+    } catch {
+      // Ignore embedding errors
+    }
+  }
+
+  return decisions.length;
+}
+
+// ============================================
+// Task Detection (from commits)
+// ============================================
+
+/**
+ * Extract task from git commit message
+ */
+export async function recordCommitAsTask(
+  commitMessage: string,
+  options?: {
+    conversationId?: string;
+    projectPath?: string;
+    filesModified?: string[];
+  }
+): Promise<number> {
+  // Clean up commit message - remove the generated footer
+  const cleanMessage = commitMessage
+    .replace(/🤖 Generated with.*$/s, "")
+    .replace(/Co-Authored-By:.*$/s, "")
+    .trim();
+
+  const id = addTask(cleanMessage, {
+    conversationId: options?.conversationId,
+    projectPath: options?.projectPath,
+    filesModified: options?.filesModified,
+    status: "completed",
+    outcome: "Committed to git",
+  });
+
+  // Store embedding
+  try {
+    await storeEmbedding("task", id, `Task: ${cleanMessage}`);
+  } catch {
+    // Ignore embedding errors
+  }
+
+  return id;
 }

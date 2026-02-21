@@ -37,6 +37,7 @@ import {
   endConversation,
   getRelevantContext,
   formatContextForPrompt,
+  processAssistantResponse,
 } from "./memory";
 
 /**
@@ -566,7 +567,16 @@ class ClaudeSession {
 
     await statusCallback("done", "");
 
-    return responseParts.join("") || "No response from Claude.";
+    // Auto-detect and record decisions from response
+    const fullResponse = responseParts.join("");
+    if (fullResponse) {
+      processAssistantResponse(fullResponse, {
+        conversationId: this.sessionId ?? undefined,
+        projectPath: WORKING_DIR,
+      }).catch((err) => console.warn(`Failed to process response for learning: ${err}`));
+    }
+
+    return fullResponse || "No response from Claude.";
   }
 
   /**
