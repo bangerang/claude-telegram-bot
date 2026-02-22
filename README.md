@@ -143,10 +143,20 @@ The bot includes a built-in `ask_user` MCP server that lets Claude present optio
 ```bash
 cp launchagent/com.claude-telegram-ts.plist.template ~/Library/LaunchAgents/com.claude-telegram-ts.plist
 # Edit the plist with your paths and env vars
-launchctl load ~/Library/LaunchAgents/com.claude-telegram-ts.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.claude-telegram-ts.plist
+launchctl enable gui/$(id -u)/com.claude-telegram-ts
+launchctl kickstart -k gui/$(id -u)/com.claude-telegram-ts
 ```
 
 The bot will start automatically on login and restart if it crashes.
+
+You can also do setup/start in one command:
+
+```bash
+mkdir -p ~/Library/LaunchAgents && cp launchagent/com.claude-telegram-ts.plist.template ~/Library/LaunchAgents/com.claude-telegram-ts.plist && launchctl bootout gui/$(id -u)/com.claude-telegram-ts 2>/dev/null || true; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.claude-telegram-ts.plist && launchctl enable gui/$(id -u)/com.claude-telegram-ts && launchctl kickstart -k gui/$(id -u)/com.claude-telegram-ts
+```
+
+Note: the launch label is `com.claude-telegram-ts` (not `com.claude-telegram.ts`).
 
 **Prevent sleep:** To keep the bot running when your Mac is idle, go to **System Settings → Battery → Options** and enable **"Prevent automatic sleeping when the display is off"** (when on power adapter).
 

@@ -9,6 +9,7 @@ import { run, sequentialize } from "@grammyjs/runner";
 import { TELEGRAM_TOKEN, WORKING_DIR, ALLOWED_USERS, RESTART_FILE } from "./config";
 import { unlinkSync, readFileSync, existsSync } from "fs";
 import { initializeMemory } from "./memory";
+import { startScheduler, stopScheduler } from "./scheduler";
 import {
   handleStart,
   handleNew,
@@ -93,6 +94,9 @@ console.log(`Allowed users: ${ALLOWED_USERS.length}`);
 // Initialize memory database
 initializeMemory();
 
+// Start daily scheduler
+startScheduler(bot);
+
 console.log("Starting bot...");
 
 // Get bot info first
@@ -127,6 +131,7 @@ const runner = run(bot);
 const stopRunner = () => {
   if (runner.isRunning()) {
     console.log("Stopping bot...");
+    stopScheduler();
     runner.stop();
   }
 };
