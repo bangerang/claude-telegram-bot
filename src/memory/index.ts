@@ -13,6 +13,7 @@ export * from "./db";
 export * from "./embeddings";
 export * from "./summarize";
 export * from "./learning";
+export * from "./git";
 
 import {
   getDb,
@@ -28,12 +29,20 @@ import {
   addKnowledge,
   getKnowledge,
   recordFeedback,
+  getRecentWorkSessions,
   type Conversation,
   type Decision,
   type Pattern,
   type Task,
   type Knowledge,
+  type WorkSession,
 } from "./db";
+
+import {
+  getProjectsWithUncommittedWork,
+  formatUncommittedWork,
+  type UncommittedWork,
+} from "./git";
 
 import {
   storeEmbedding,
@@ -210,6 +219,23 @@ export function recordUserFeedback(
 }
 
 // ============================================
+// Helper Functions
+// ============================================
+
+/**
+ * Format a date as relative time (e.g., "5 min ago", "2 hours ago")
+ */
+function getTimeAgo(date: Date): string {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)} days ago`;
+  return date.toLocaleDateString();
+}
+
+// ============================================
 // Search and Retrieval
 // ============================================
 
@@ -239,7 +265,7 @@ export async function searchMemory(
 
 /**
  * Get relevant context for a conversation
- * Combines recent items with semantic search
+ * Combines recent items with semantic search and git status
  */
 export async function getRelevantContext(
   projectPath?: string,
@@ -250,21 +276,26 @@ export async function getRelevantContext(
   learnedPatterns: Pattern[];
   recentTasks: Task[];
   projectKnowledge: Knowledge[];
+  recentWorkSessions: WorkSession[];
+  uncommittedWork: UncommittedWork[];
   semanticMatches?: SearchResult[];
 }> {
+  // Run git checks and DB queries in parallel
+  const [uncommittedWork, semanticMatches] = await Promise.all([
+    getProjectsWithUncommittedWork(),
+    query ? searchMemory(query, { limit: 5 }) : Promise.resolve(undefined),
+  ]);
+
   const context = {
     recentConversations: getRecentConversations(5),
     activeDecisions: getDecisions({ projectPath, activeOnly: true, limit: 10 }),
     learnedPatterns: getPatterns({ minConfidence: 0.6, limit: 10 }),
     recentTasks: getRecentTasks({ projectPath, limit: 10 }),
     projectKnowledge: getKnowledge({ projectPath, currentOnly: true, limit: 20 }),
-    semanticMatches: undefined as SearchResult[] | undefined,
+    recentWorkSessions: getRecentWorkSessions({ limit: 10 }),
+    uncommittedWork,
+    semanticMatches,
   };
-
-  // Add semantic search results if query provided
-  if (query) {
-    context.semanticMatches = await searchMemory(query, { limit: 5 });
-  }
 
   return context;
 }
@@ -274,6 +305,23 @@ export async function getRelevantContext(
  */
 export function formatContextForPrompt(context: Awaited<ReturnType<typeof getRelevantContext>>): string {
   const parts: string[] = [];
+
+  // Uncommitted work - show this first, it's important!
+  if (context.uncommittedWork.length > 0) {
+    parts.push(formatUncommittedWork(context.uncommittedWork));
+  }
+
+  // Recent conversations (what we just talked about)
+  if (context.recentConversations.length > 0) {
+    parts.push("**Recent Conversations:**");
+    for (const c of context.recentConversations.slice(0, 3)) {
+      if (c.title && c.summary) {
+        const ago = c.ended_at ? getTimeAgo(new Date(c.ended_at)) : "ongoing";
+        parts.push(`- [${ago}] ${c.title}: ${c.summary}`);
+      }
+    }
+    parts.push("");
+  }
 
   // Active decisions for this project
   if (context.activeDecisions.length > 0) {

@@ -522,3 +522,94 @@ export function recordFeedback(
   );
   return Number(result.lastInsertRowid);
 }
+
+// ============================================
+// WORK SESSIONS
+// ============================================
+
+export interface WorkSession {
+  id: number;
+  conversation_id?: string;
+  project_path: string;
+  project_name?: string;
+  summary?: string;
+  files_changed?: string[];
+  commit_hash?: string;
+  commit_message?: string;
+  started_at: string;
+  ended_at?: string;
+}
+
+export function logWorkSession(
+  projectPath: string,
+  options?: {
+    conversationId?: string;
+    projectName?: string;
+    summary?: string;
+    filesChanged?: string[];
+    commitHash?: string;
+    commitMessage?: string;
+  }
+): number {
+  const db = getDb();
+  const result = db.run(
+    `INSERT INTO work_sessions (
+      conversation_id, project_path, project_name, summary, files_changed, commit_hash, commit_message
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      options?.conversationId ?? null,
+      projectPath,
+      options?.projectName ?? null,
+      options?.summary ?? null,
+      options?.filesChanged ? JSON.stringify(options.filesChanged) : null,
+      options?.commitHash ?? null,
+      options?.commitMessage ?? null,
+    ]
+  );
+  return Number(result.lastInsertRowid);
+}
+
+export function updateWorkSessionWithCommit(
+  id: number,
+  commitHash: string,
+  commitMessage?: string
+): void {
+  const db = getDb();
+  db.run(
+    `UPDATE work_sessions SET commit_hash = ?, commit_message = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [commitHash, commitMessage ?? null, id]
+  );
+}
+
+export function getRecentWorkSessions(options?: {
+  projectPath?: string;
+  uncommittedOnly?: boolean;
+  limit?: number;
+}): WorkSession[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (options?.projectPath) {
+    conditions.push("project_path = ?");
+    params.push(options.projectPath);
+  }
+  if (options?.uncommittedOnly) {
+    conditions.push("commit_hash IS NULL");
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limit = options?.limit ?? 20;
+
+  const rows = db.query(`
+    SELECT * FROM work_sessions
+    ${where}
+    ORDER BY started_at DESC
+    LIMIT ${limit}
+  `).all(...params) as any[];
+
+  return rows.map((row) => ({
+    ...row,
+    files_changed: row.files_changed ? JSON.parse(row.files_changed) : undefined,
+  }));
+}
