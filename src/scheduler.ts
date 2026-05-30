@@ -5,7 +5,14 @@
 
 import { Bot } from "grammy";
 import { readFileSync, writeFileSync, existsSync } from "fs";
-import { ALLOWED_USERS } from "./config";
+import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  ALLOWED_PATHS,
+  ALLOWED_USERS,
+  MCP_SERVERS,
+  SAFETY_PROMPT,
+  WORKING_DIR,
+} from "./config";
 
 const TASKS_FILE = `${process.env.HOME}/.ai/scheduled-tasks.json`;
 
@@ -16,6 +23,9 @@ interface RecurringTask {
   minute: number;
   message: string;
   enabled: boolean;
+  // If true, run `message` as an agent prompt and post the result to Telegram.
+  // If false (or omitted), just post `message` verbatim as a Telegram notification.
+  autoExecute?: boolean;
 }
 
 interface OneTimeTask {
@@ -36,12 +46,13 @@ interface TasksFile {
 const RECURRING_TASKS: RecurringTask[] = [
   {
     type: "recurring",
-    name: "morning-checkin",
-    hour: 9,
+    name: "tui-do-daily",
+    hour: 8,
     minute: 0,
     message:
-      "🌅 Good morning! Quick check-in:\n\n• How did you sleep?\n• Mood right now?\n• Any habits to log? (e.g. \"Improve speaking\")\n\nJust reply naturally and I'll track it for you.",
+      "Give me my daily TUI-DO update. Use the tui-do MCP to list all in-progress and not-started tasks. Group them by project and due date. Highlight anything due today or overdue. Keep the response concise — no preamble, just the list.",
     enabled: true,
+    autoExecute: true,
   },
 ];
 
@@ -137,6 +148,78 @@ export function cancelTask(taskId: string): boolean {
 }
 
 /**
+ * Run a scheduled prompt as an agent query and post the final text response to Telegram.
+ * Uses a fresh Claude session each time so it never interferes with the user's active session.
+ */
+async function runScheduledAgent(
+  bot: Bot,
+  chatId: number,
+  prompt: string,
+  taskName: string
+) {
+  try {
+    await bot.api.sendMessage(chatId, `🤖 Running scheduled: ${taskName}...`);
+
+    const finalParts: string[] = [];
+
+    const response = query({
+      prompt,
+      options: {
+        cwd: WORKING_DIR,
+        mcpServers: MCP_SERVERS,
+        allowedTools: [
+          "Bash",
+          "Read",
+          "Write",
+          "Edit",
+          "Glob",
+          "Grep",
+          // Allow all MCP tools by default; tui-do is included via MCP_SERVERS.
+        ],
+        permissionMode: "bypassPermissions",
+        settingSources: ["project", "user"],
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          append: `${SAFETY_PROMPT}\n\nYou are running on a scheduled timer (no human in the loop). Be concise and self-contained. Do not ask follow-up questions.`,
+        },
+        additionalDirectories: ALLOWED_PATHS,
+      },
+    });
+
+    for await (const msg of response as AsyncIterable<SDKMessage>) {
+      if (msg.type === "assistant") {
+        for (const block of msg.message.content) {
+          if (block.type === "text") {
+            finalParts.push(block.text);
+          }
+        }
+      }
+    }
+
+    const finalText = finalParts.join("").trim() || "(no response)";
+
+    // Telegram caps at 4096 chars; chunk if needed.
+    const MAX = 4000;
+    for (let i = 0; i < finalText.length; i += MAX) {
+      await bot.api.sendMessage(chatId, finalText.slice(i, i + MAX));
+    }
+
+    console.log(`Scheduled agent task "${taskName}" completed`);
+  } catch (err) {
+    console.error(`Scheduled agent task "${taskName}" failed:`, err);
+    try {
+      await bot.api.sendMessage(
+        chatId,
+        `⚠️ Scheduled task "${taskName}" failed: ${String(err).slice(0, 300)}`
+      );
+    } catch {
+      // ignore double-failure
+    }
+  }
+}
+
+/**
  * Check and execute scheduled tasks
  */
 function checkScheduledTasks(bot: Bot) {
@@ -157,14 +240,27 @@ function checkScheduledTasks(bot: Bot) {
 
       lastRunDates.set(task.name, taskKey);
 
-      // Send to all allowed users
+      // Send to all allowed users — either as a static notification or as an agent run.
       for (const userId of ALLOWED_USERS) {
-        bot.api.sendMessage(userId, task.message).catch((err) => {
-          console.error(`Failed to send scheduled message to ${userId}:`, err);
-        });
+        if (task.autoExecute) {
+          runScheduledAgent(bot, userId, task.message, task.name).catch(
+            (err) =>
+              console.error(
+                `Scheduled agent ${task.name} failed for ${userId}:`,
+                err
+              )
+          );
+        } else {
+          bot.api.sendMessage(userId, task.message).catch((err) => {
+            console.error(
+              `Failed to send scheduled message to ${userId}:`,
+              err
+            );
+          });
+        }
       }
 
-      console.log(`Recurring task "${task.name}" sent at ${hour}:${minute}`);
+      console.log(`Recurring task "${task.name}" fired at ${hour}:${minute}`);
     }
   }
 
